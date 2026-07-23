@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets / local env
+.env
+
+# Run outputs are committed on purpose — the assignment asks for generated
+# outputs in the repo, and the evidence files are the proof that every claim
+# is grounded in a real quote from a real URL.

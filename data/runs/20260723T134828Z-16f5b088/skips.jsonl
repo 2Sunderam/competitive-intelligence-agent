@@ -1,0 +1,2 @@
+{"competitor":"Microsoft Copilot","source":"hacker_news","reason":"HN returned 12 hits but none were on-topic for Microsoft Copilot (relevance filter)","url":"https://hn.algolia.com/api/v1/search"}
+{"competitor":"Google Cloud Search","source":"hacker_news","reason":"HN returned 13 hits but none were on-topic for Google Cloud Search (relevance filter)","url":"https://hn.algolia.com/api/v1/search"}
