@@ -1,8 +1,9 @@
 # Competitive Intelligence & Market Gap Agent
 
-Takes a company name, a one-paragraph description and a seed list of competitors. Reads what
-real people say about all of them on public platforms, and produces an evidence-backed brief:
-how the company compares, and where the unmet pain points in its domain are.
+Takes a company (`Name|domain`), a one-paragraph description and seed competitors
+(`Name|domain` each). Reads what real people say about all of them on public platforms,
+and produces an evidence-backed brief: how the company compares, and where the unmet
+pain points in its domain are.
 
 Every claim carries a **verbatim quote and a source URL**. That constraint is enforced in code,
 not requested in a prompt.
@@ -38,15 +39,18 @@ Hacker News needs no key.
 
 ```bash
 uv run compete \
-  --company "Kandji" \
+  --company "Kandji|https://www.kandji.io" \
   --description "Kandji is an Apple device management (MDM) platform for IT teams, automating device setup, security compliance, patching and endpoint hardening for Mac, iPhone and iPad fleets." \
-  --competitor "Jamf" \
-  --competitor "Mosyle" \
-  --competitor "Addigy" \
-  --competitor "Hexnode" \
-  --competitor "JumpCloud"
+  --competitor "Jamf|https://www.jamf.com" \
+  --competitor "Mosyle|https://mosyle.com" \
+  --competitor "Addigy|https://addigy.com" \
+  --competitor "Hexnode|https://www.hexnode.com" \
+  --competitor "JumpCloud|https://jumpcloud.com"
 ```
 
+Company and each competitor are `Name|domain` (URL or bare host). Domains are
+taken as given — the agent does not guess `name.com`. Resolve still asks the LLM
+for G2 / LinkedIn slugs, aliases and category keywords using that known domain.
 Output goes to an auto-named folder, `data/runs/<UTC-timestamp>-<uuid8>/`:
 
 | File | Contents |
@@ -64,9 +68,15 @@ Two runs are committed under `data/runs/`.
 
 ```json
 {
-  "company_name": "Kandji",
+  "company_name": "Kandji|https://www.kandji.io",
   "description": "Kandji is an Apple device management (MDM) platform for IT teams, automating device setup, security compliance, patching and endpoint hardening for Mac, iPhone and iPad fleets.",
-  "seed_competitors": ["Jamf", "Mosyle", "Addigy", "Hexnode", "JumpCloud"]
+  "seed_competitors": [
+    "Jamf|https://www.jamf.com",
+    "Mosyle|https://mosyle.com",
+    "Addigy|https://addigy.com",
+    "Hexnode|https://www.hexnode.com",
+    "JumpCloud|https://jumpcloud.com"
+  ]
 }
 ```
 
@@ -93,7 +103,7 @@ different supersteps and `write_report` fires twice, once with half-filled state
 | Node | Job |
 |---|---|
 | `intake` | Validate and dedupe competitors; target becomes competitor #0 |
-| `resolve_entities` | One LLM call → canonical domain, G2 slug, LinkedIn slug, aliases, category keywords |
+| `resolve_entities` | One LLM call → G2 slug, LinkedIn slug, aliases, category keywords (domains already set at intake) |
 | `ingest` | Call every source client per competitor; fail soft per source |
 | `extract_map` | One LLM call per document → grounded claims, attributed per company |
 | `cluster_pain_points` | Cluster complaint claims across all companies |
@@ -174,11 +184,6 @@ for line in open("data/runs/<run>/evidence.jsonl"):
     for c in r["claims"]:
         assert " ".join(c["quote"].split()) in src, c["claim_id"]
 ```
-
-**Dedup at write time.** Claims hash on `(competitor, dimension, normalised text)`. On a hit the
-new URL is appended to the existing claim's `linked_source_urls` instead of writing a second
-claim. All concurrent extract tasks share one locked store, so IDs are allocated once and the
-dedup index is global.
 
 **Conflicts are preserved, never resolved.** Sentiment is per claim. When a dimension holds more
 than one, the brief renders `⚠️ conflicting opinions preserved (negative, positive)` with both
@@ -272,19 +277,19 @@ together.
 ## Tests
 
 ```bash
-uv run pytest        # 3 tests, no network, ~0.2s
+uv run pytest        # 7 tests, no network, ~0.4s
 ```
 
-`tests/test_required_behaviors.py` — one test per required behavior:
+`tests/test_required_behaviors.py` covers the three behaviors that matter for a trustworthy run:
 
-| Behavior | Test asserts |
+| Test | Asserts |
 |---|---|
-| Unreachable / blocked / empty source | A failing source is recorded as a `SourceSkip` with its real reason, the run does not crash, and the healthy source still returns documents |
-| Dedup across sources | The second write returns `None`, one record exists, and the second URL is attached to the existing claim |
-| Conflicting viewpoints | A positive and a negative claim on one dimension both survive |
+| Blocked / empty source | A failing source becomes a `SourceSkip` with the real reason; the run continues and healthy sources still return documents |
+| Ungrounded quote discarded | A claim whose quote is not a substring of the source text is dropped; a claim with a real quote is kept |
+| Conflicting viewpoints | A positive and a negative claim on the same dimension both survive — nothing collapses them into a verdict |
 
-No HTTP mocking. The failure case injects two stub clients into `ingest`; the other two run
-against `EvidenceStore` on a temp path.
+No HTTP mocking. The source-failure case injects two stub clients into `ingest`; the quote and
+conflict cases run against `EvidenceStore` on a temp path.
 
 ## Layout
 
@@ -296,7 +301,7 @@ src/compete/
   config.py      Env-driven settings
   sources/       reddit · hacker_news · jina · base
   nodes/         intake · resolve · ingest · extract · synthesize · compare · cluster · report
-  store/         evidence.py (append-only JSONL) · validate.py (quote + hash)
+  store/         evidence.py (append-only JSONL) · validate.py (quote checks)
   llm/client.py  Prompts and structured-output calls
 tests/           test_required_behaviors.py
 data/runs/       Committed run outputs

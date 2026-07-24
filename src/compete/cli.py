@@ -11,14 +11,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Competitive intelligence & market gap agent",
     )
-    parser.add_argument("--company", required=True, help="Target company name")
+    parser.add_argument(
+        "--company",
+        required=True,
+        help='Target as Name|domain, e.g. \'Kandji|https://www.kandji.io\'',
+    )
     parser.add_argument("--description", required=True, help="One-paragraph product description")
     parser.add_argument(
         "--competitor",
         action="append",
         dest="competitors",
         required=True,
-        help="Seed competitor (repeat flag for multiple)",
+        help='Competitor as Name|domain (repeat). e.g. \'Jamf|https://www.jamf.com\'',
     )
     parser.add_argument("--run-dir", default=None, help="Optional output directory")
     args = parser.parse_args(argv)

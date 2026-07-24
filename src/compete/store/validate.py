@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
 
@@ -10,11 +9,6 @@ def normalize_text(text: str) -> str:
     text = text.casefold()
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-
-def claim_hash(competitor: str, dimension: str, text: str) -> str:
-    payload = f"{normalize_text(competitor)}|{normalize_text(dimension)}|{normalize_text(text)}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def quote_is_substring(quote: str, source_text: str) -> bool:

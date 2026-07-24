@@ -69,7 +69,6 @@ class Claim(BaseModel):
     text: str
     quote: str
     sentiment: Sentiment
-    linked_source_urls: list[str] = Field(default_factory=list)
 
 
 class EvidenceRecord(BaseModel):

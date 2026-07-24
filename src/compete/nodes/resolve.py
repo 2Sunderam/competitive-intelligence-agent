@@ -1,30 +1,28 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
 
 from compete.config import get_settings
 from compete.llm.client import make_reason_llm, resolve_entities_with_llm
 from compete.logging_utils import get_logger, log_step
 from compete.models import Competitor, ResolvedEntityDraft
-from compete.sources.jina import company_slug
 from compete.state import AgentState
 
 log = get_logger("resolve")
 
 
-def _clean_domain(raw: str) -> str | None:
-    value = (raw or "").strip().casefold()
-    if not value:
-        return None
-    value = value.replace("https://", "").replace("http://", "")
-    value = value.split("/")[0].strip(".")
-    if "." not in value:
-        return None
-    return value
+def _slug_from_domain_or_name(domain: str | None, name: str) -> str:
+    """Sanitize empty LLM slug: first domain label, else a hyphenated name."""
+    if domain:
+        label = domain.split(".", 1)[0]
+        cleaned = re.sub(r"[^a-z0-9-]+", "-", label.casefold()).strip("-")
+        if cleaned:
+            return cleaned
+    cleaned = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    return cleaned or "unknown"
 
 
-def _clean_slug(raw: str, fallback_name: str) -> str:
+def _clean_slug(raw: str, *, domain: str | None, name: str) -> str:
     value = (raw or "").strip().casefold()
     value = value.replace("https://", "").replace("http://", "")
     if "g2.com/products/" in value:
@@ -33,22 +31,23 @@ def _clean_slug(raw: str, fallback_name: str) -> str:
         value = value.split("linkedin.com/company/", 1)[1]
     value = value.split("/")[0]
     value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
-    return value or company_slug(fallback_name)
+    return value or _slug_from_domain_or_name(domain, name)
 
 
 def _apply_resolution(
     competitors: list[Competitor],
     drafts_by_name: dict[str, ResolvedEntityDraft],
 ) -> list[Competitor]:
+    """Keep user domains; attach LLM-guessed G2 / LinkedIn / aliases / keywords."""
     updated: list[Competitor] = []
     for comp in competitors:
         key = re.sub(r"\s+", " ", comp.name.strip().casefold())
-        draft = drafts_by_name.get(key)
-        domain = _clean_domain(draft.official_domain if draft else "") or comp.domain
-        g2_slug = _clean_slug(draft.g2_product_slug if draft else "", comp.name)
-        li_slug = _clean_slug(draft.linkedin_company_slug if draft else "", comp.name)
-        aliases = list(draft.aliases) if draft else []
-        keywords = list(draft.category_keywords) if draft else []
+        draft = drafts_by_name[key]
+        domain = comp.domain  # never overwritten — intake already locked it
+        g2_slug = _clean_slug(draft.g2_product_slug, domain=domain, name=comp.name)
+        li_slug = _clean_slug(draft.linkedin_company_slug, domain=domain, name=comp.name)
+        aliases = list(draft.aliases)
+        keywords = list(draft.category_keywords)
         if not keywords and comp.description:
             tokens = re.findall(r"[a-zA-Z][a-zA-Z\-]{3,}", comp.description.casefold())
             keywords = list(dict.fromkeys(tokens))[:6]
@@ -76,43 +75,48 @@ def _apply_resolution(
 
 
 async def resolve_entities_node(state: AgentState) -> dict:
-    """Thin LLM wrapper: lock competitors to canonical domain / G2 / LinkedIn URLs."""
+    """Guess G2 / LinkedIn / aliases via LLM; domains stay as intake provided.
+
+    Requires ``OPENAI_API_KEY`` — without a model there is nothing useful to do.
+    """
     competitors: list[Competitor] = list(state.get("competitors") or [])
     description = state.get("description") or ""
     company_name = state.get("company_name") or ""
     log_step(log, "resolve_entities.start", companies=len(competitors))
 
     settings = get_settings()
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required. This agent cannot resolve entities or "
+            "extract claims without an LLM."
+        )
+
+    llm = make_reason_llm(settings)
+    result = await resolve_entities_with_llm(
+        llm,
+        target_name=company_name,
+        description=description,
+        entities=[
+            {"name": c.name, "domain": c.domain or ""}
+            for c in competitors
+        ],
+    )
     drafts_by_name: dict[str, ResolvedEntityDraft] = {}
+    for draft in result.entities:
+        key = re.sub(r"\s+", " ", draft.name.strip().casefold())
+        drafts_by_name[key] = draft
 
-    if settings.openai_api_key:
-        try:
-            llm = make_reason_llm(settings)
-            result = await resolve_entities_with_llm(
-                llm,
-                target_name=company_name,
-                description=description,
-                competitor_names=[c.name for c in competitors],
-            )
-            for draft in result.entities:
-                key = re.sub(r"\s+", " ", draft.name.strip().casefold())
-                drafts_by_name[key] = draft
-            log_step(log, "resolve_entities.llm_ok", resolved=len(drafts_by_name))
-        except Exception as exc:  # noqa: BLE001
-            log_step(log, "resolve_entities.llm_fallback", error=str(exc)[:160])
-    else:
-        log_step(log, "resolve_entities.no_llm", reason="OPENAI_API_KEY missing")
+    missing = [
+        c.name
+        for c in competitors
+        if re.sub(r"\s+", " ", c.name.strip().casefold()) not in drafts_by_name
+    ]
+    if missing:
+        raise RuntimeError(
+            "Entity resolution LLM omitted companies: " + ", ".join(missing)
+        )
 
-    for comp in competitors:
-        key = re.sub(r"\s+", " ", comp.name.strip().casefold())
-        if key not in drafts_by_name:
-            drafts_by_name[key] = ResolvedEntityDraft(
-                name=comp.name,
-                official_domain=comp.domain or "",
-                g2_product_slug=company_slug(comp.name),
-                linkedin_company_slug=company_slug(comp.name),
-            )
-
+    log_step(log, "resolve_entities.llm_ok", resolved=len(drafts_by_name))
     resolved = _apply_resolution(competitors, drafts_by_name)
     for c in resolved:
         log_step(

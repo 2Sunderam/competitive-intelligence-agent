@@ -94,52 +94,41 @@ async def test_blocked_source_is_skipped_and_the_run_continues(monkeypatch, tmp_
 
 
 # --------------------------------------------------------------------------
-# 2. Deduplication of the same claim appearing across multiple sources
+# 2. Quotes must be verbatim substrings of the source text
 # --------------------------------------------------------------------------
 
 
-async def test_same_claim_from_two_sources_is_linked_not_duplicated(tmp_path: Path):
+async def test_ungrounded_quote_is_discarded(tmp_path: Path):
     store = EvidenceStore(tmp_path / "evidence.jsonl")
     source_text = "Pricing jumps sharply above 10 seats for growing teams."
-    draft = [
-        _claim(
-            text="pricing jumps sharply above 10 seats",
-            quote="Pricing jumps sharply above 10 seats",
-            dimension=Dimension.PRICING,
-            sentiment=Sentiment.NEGATIVE,
-        )
-    ]
 
-    first = store.append(
+    record = store.append(
         competitor="Acme CRM",
         source=SourceKind.REDDIT.value,
         url="https://reddit.com/r/saas/1",
         platform="reddit",
         date=None,
         source_text=source_text,
-        draft_claims=draft,
-    )
-    second = store.append(
-        competitor="Acme CRM",
-        source=SourceKind.HACKER_NEWS.value,
-        url="https://news.ycombinator.com/item?id=1",
-        platform="hacker_news",
-        date=None,
-        source_text=source_text,
-        draft_claims=draft,
+        draft_claims=[
+            _claim(
+                text="pricing is secretly free forever",
+                quote="pricing is secretly free forever",  # not in source
+                dimension=Dimension.PRICING,
+                sentiment=Sentiment.POSITIVE,
+            ),
+            _claim(
+                text="pricing jumps sharply above 10 seats",
+                quote="Pricing jumps sharply above 10 seats",
+                dimension=Dimension.PRICING,
+                sentiment=Sentiment.NEGATIVE,
+            ),
+        ],
     )
 
-    assert first is not None
-    assert second is None  # the duplicate is not written again
-
-    records = store.read_all()
-    assert len(records) == 1
-    assert len(records[0].claims) == 1
-    # The second source is attached to the existing claim instead
-    assert (
-        "https://news.ycombinator.com/item?id=1"
-        in records[0].claims[0].linked_source_urls
-    )
+    assert record is not None
+    assert len(record.claims) == 1
+    assert record.claims[0].quote == "Pricing jumps sharply above 10 seats"
+    assert "secretly free" not in record.claims[0].text
 
 
 # --------------------------------------------------------------------------

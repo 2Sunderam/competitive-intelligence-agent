@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import json
 import threading
 from pathlib import Path
 
 from compete.models import Claim, EvidenceRecord
-from compete.store.validate import claim_hash, quote_is_substring
+from compete.store.validate import quote_is_substring
 
 # One store instance per evidence file, shared by every concurrent extract task.
 #
 # The map stage fans out one task per document. If each task built its own
 # EvidenceStore, each would read the (still empty) file, start its counters at
 # zero and hand out ``ev_0001`` / ``cl_0001`` simultaneously — colliding IDs
-# that destroy traceability — and each would carry its own dedup index, so a
-# claim repeated across two documents would never be recognised as a duplicate.
-# Sharing one locked instance fixes ID allocation, cross-document dedup and the
-# read-modify-write race on the JSONL file at once.
+# that destroy traceability. Sharing one locked instance fixes ID allocation
+# and the append race on the JSONL file at once.
 _INSTANCES: dict[str, "EvidenceStore"] = {}
 _REGISTRY_LOCK = threading.Lock()
 
@@ -42,7 +39,7 @@ def reset_evidence_stores() -> None:
 
 
 class EvidenceStore:
-    """Append-only JSONL evidence store with quote validation + claim dedup.
+    """Append-only JSONL evidence store with quote validation.
 
     Prefer :func:`get_evidence_store` over constructing this directly, so all
     concurrent writers share one lock and one ID counter.
@@ -53,7 +50,6 @@ class EvidenceStore:
         self.excerpt_chars = excerpt_chars
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._claim_index: dict[str, tuple[str, str]] = {}  # hash -> (evidence_id, claim_id)
         self._evidence_count = 0
         self._claim_count = 0
         self._load_index()
@@ -68,10 +64,7 @@ class EvidenceStore:
                     continue
                 record = EvidenceRecord.model_validate_json(line)
                 self._evidence_count += 1
-                for claim in record.claims:
-                    h = claim_hash(record.competitor, claim.dimension.value, claim.text)
-                    self._claim_index[h] = (record.evidence_id, claim.claim_id)
-                    self._claim_count += 1
+                self._claim_count += len(record.claims)
 
     def next_evidence_id(self) -> str:
         self._evidence_count += 1
@@ -93,44 +86,30 @@ class EvidenceStore:
         draft_claims: list[Claim],
         raw_excerpt: str | None = None,
     ) -> EvidenceRecord | None:
-        """Validate quotes, dedupe claims, append one evidence line.
+        """Validate quotes and append one evidence line.
 
         Returns None if no valid claims remain after filtering.
         """
         with self._lock:
             validated: list[Claim] = []
-            pending: list[tuple[str, Claim]] = []
             for draft in draft_claims:
                 if not quote_is_substring(draft.quote, source_text):
                     continue
-
-                h = claim_hash(competitor, draft.dimension.value, draft.text)
-                if h in self._claim_index:
-                    # Link as a second source rather than writing a duplicate claim
-                    evidence_id, claim_id = self._claim_index[h]
-                    self._link_existing(evidence_id, claim_id, url)
-                    continue
-
-                claim = Claim(
-                    claim_id=self.next_claim_id(),
-                    dimension=draft.dimension,
-                    text=draft.text,
-                    quote=draft.quote,
-                    sentiment=draft.sentiment,
-                    linked_source_urls=[],
+                validated.append(
+                    Claim(
+                        claim_id=self.next_claim_id(),
+                        dimension=draft.dimension,
+                        text=draft.text,
+                        quote=draft.quote,
+                        sentiment=draft.sentiment,
+                    )
                 )
-                validated.append(claim)
-                pending.append((h, claim))
 
             if not validated:
                 return None
 
-            evidence_id = self.next_evidence_id()
-            for h, claim in pending:
-                self._claim_index[h] = (evidence_id, claim.claim_id)
-
             record = EvidenceRecord(
-                evidence_id=evidence_id,
+                evidence_id=self.next_evidence_id(),
                 competitor=competitor,
                 source=source,  # type: ignore[arg-type]
                 url=url,
@@ -142,30 +121,6 @@ class EvidenceStore:
             with self.path.open("a", encoding="utf-8") as fh:
                 fh.write(record.model_dump_json() + "\n")
             return record
-
-    def _link_existing(self, evidence_id: str, claim_id: str, url: str) -> None:
-        """Attach a corroborating source URL to an already-written claim.
-
-        Only ever called with ``self._lock`` held, so the read-modify-write of
-        the JSONL file cannot interleave with a concurrent append.
-        """
-        if not self.path.exists():
-            return
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        rewritten: list[str] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            data = json.loads(line)
-            if data.get("evidence_id") == evidence_id:
-                for claim in data.get("claims", []):
-                    if claim.get("claim_id") == claim_id:
-                        linked = claim.setdefault("linked_source_urls", [])
-                        if url not in linked and url != data.get("url"):
-                            linked.append(url)
-            rewritten.append(json.dumps(data, ensure_ascii=False))
-        if rewritten:
-            self.path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
 
     def read_all(self) -> list[EvidenceRecord]:
         if not self.path.exists():

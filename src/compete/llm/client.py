@@ -74,12 +74,12 @@ def build_extract_prompt(
 
 
 ENTITY_RESOLVE_SYSTEM = """You resolve competitor entities for competitive research.
-Given a target company description and a list of competitor names, return canonical
-identifiers so search does not pick the wrong org with the same name.
+Each company already has a known official domain (provided as input). Do NOT
+invent or change domains. Use the name + domain + product description to guess
+the remaining search identifiers.
 
 For each competitor (including the target):
-- official_domain: apex domain only, e.g. fireflies.ai (no scheme/path)
-- g2_product_slug: G2 slug if known/likely, e.g. fireflies-ai (else best guess)
+- g2_product_slug: G2 /products/ slug if known/likely (else best hyphenated guess)
 - linkedin_company_slug: LinkedIn /company/ slug if known/likely (else best guess)
 - aliases: alternate product/company names used in reviews
 - category_keywords: 3-6 keywords from the target description that disambiguate
@@ -88,7 +88,9 @@ For each competitor (including the target):
 Rules:
 - Prefer well-known SaaS product identities matching the description category.
 - Do not invent unrelated industries.
-- If unsure of a slug, still provide the best lowercase hyphenated guess from the name.
+- If unsure of a slug, derive a lowercase hyphenated guess from the name or
+  domain label (e.g. jamf.com → jamf).
+- official_domain in the schema may be left empty; the caller already has it.
 """
 
 
@@ -257,16 +259,19 @@ async def resolve_entities_with_llm(
     *,
     target_name: str,
     description: str,
-    competitor_names: list[str],
+    entities: list[dict[str, str]],
 ) -> EntityResolutionResult:
+    """Guess G2 / LinkedIn / aliases for entities whose domains are already known."""
     structured = llm.with_structured_output(EntityResolutionResult)
-    names = ", ".join(competitor_names)
+    lines = "\n".join(
+        f"- name={e['name']}; official_domain={e['domain']}" for e in entities
+    )
     prompt = (
         f"{ENTITY_RESOLVE_SYSTEM}\n\n"
         f"Target company: {target_name}\n"
         f"Target description: {description}\n"
-        f"All entities to resolve (include target): {names}\n\n"
-        "Return one entity object per name."
+        f"Entities (domains are authoritative — do not change them):\n{lines}\n\n"
+        "Return one entity object per name with g2/linkedin/aliases/keywords."
     )
     result = await structured.ainvoke(prompt)
     if isinstance(result, EntityResolutionResult):

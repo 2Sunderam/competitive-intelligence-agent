@@ -40,10 +40,10 @@ def _cite(claim_id: str, lookup: dict[str, tuple[EvidenceRecord, Claim]]) -> str
         return f"  - `{claim_id}` (claim not found)"
     record, claim = entry
     mark = SENTIMENT_MARK.get(claim.sentiment, "·")
-    line = f"  - {mark} {claim.text} — “{_short_quote(claim.quote)}” ([{record.platform}]({record.url}) `{claim_id}`)"
-    if claim.linked_source_urls:
-        line += f" +{len(claim.linked_source_urls)} corroborating source(s)"
-    return line
+    return (
+        f"  - {mark} {claim.text} — “{_short_quote(claim.quote)}” "
+        f"([{record.platform}]({record.url}) `{claim_id}`)"
+    )
 
 
 def _render_brief(
@@ -265,7 +265,6 @@ def write_report(state: AgentState) -> dict:
                 "platform": record.platform,
                 "source": record.source.value,
                 "date": record.date,
-                "linked_source_urls": claim.linked_source_urls,
             }
         )
 

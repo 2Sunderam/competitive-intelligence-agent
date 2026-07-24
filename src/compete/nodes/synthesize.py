@@ -16,10 +16,10 @@ def _synthesize_deterministic(
 ) -> CompanyProfile:
     """Group one company's claims by dimension.
 
-    Purely deterministic on purpose: the claims are already grounded and
-    deduped, so an LLM pass here would add cost and hallucination risk without
-    adding information. Conflicting sentiments inside a dimension are recorded
-    rather than resolved.
+    Purely deterministic on purpose: the claims are already grounded, so an
+    LLM pass here would add cost and hallucination risk without adding
+    information. Conflicting sentiments inside a dimension are recorded rather
+    than resolved.
     """
     by_dim: dict[Dimension, list[str]] = defaultdict(list)
     sentiments: dict[Dimension, set[Sentiment]] = defaultdict(set)
